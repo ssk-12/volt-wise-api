@@ -4,12 +4,22 @@ import numpy as np
 from fastapi import FastAPI, Query
 from datetime import datetime
 import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
 
 # Load the trained model
 with open('model.pkl', 'rb') as file:
     model = pickle.load(file)
 
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
 
 @app.get("/health")
 def health_check():
