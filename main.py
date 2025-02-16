@@ -63,5 +63,14 @@ def predict(date: str = Query(default=datetime.today().strftime('%Y-%m-%d'))):
     
     return {"predictions": predictions}
 
+@app.get("/weather")
+def get_weather(date: str = Query(default=datetime.today().strftime('%Y-%m-%d'))):
+    # Fetch weather data
+    response = requests.get(WEATHER_API_URL.format(date=date))
+    if response.status_code != 200:
+        return {"error": "Failed to fetch weather data"}
+    
+    return response.json()  # Return the raw JSON response from the weather API
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
