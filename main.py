@@ -1,105 +1,57 @@
-from fastapi import FastAPI, HTTPException
 import pickle
+import requests
 import numpy as np
-from pydantic import BaseModel
-import os
-import httpx
+from fastapi import FastAPI, Query
 from datetime import datetime
-import json
+import uvicorn
+
+# Load the trained model
+with open('model.pkl', 'rb') as file:
+    model = pickle.load(file)
 
 app = FastAPI()
 
-# Initialize model variable
-model = None
-
-# Try to load the ML model
-try:
-    model_path = "model.pkl"
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(
-            f"The model file '{model_path}' was not found. Please ensure the model file exists in the project directory."
-        )
-    
-    with open(model_path, "rb") as f:
-        model = pickle.load(f)
-except Exception as e:
-    print(f"Error loading model: {str(e)}")
-
-async def fetch_weather_data(station, date):
-    url = f"https://d.meteostat.net/app/proxy/stations/hourly?station={station}&tz=Asia/Kolkata&start={date}&end={date}"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        return response.json()
-
-def process_weather_data(data):
-    processed_data = []
-    for idx, record in enumerate(data):
-        # Extract and order features according to model requirements
-        features = [
-            record['temp'],      # Temperature
-            record['dwpt'],      # Dew Point
-            record['rhum'],      # Humidity
-            record['prcp'],      # Precipitation
-            record['wdir'],      # Wind Direction
-            record['wspd'],      # Wind Speed
-            record['pres'],      # Pressure
-            record['coco'],      # Cloud Cover
-            0,                   # Is_Holiday (set to 0)
-            idx                  # Index
-        ]
-        processed_data.append({
-            'time': record['time'],
-            'features': features
-        })
-    return processed_data
-
 @app.get("/health")
 def health_check():
-    return {
-        "status": "up",
-        "model_loaded": model is not None
-    }
+    return {"status": "up"}
 
-@app.get("/predict/{station}/{date}")
-async def predict_weather(station: str, date: str):
-    if model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="The ML model is not loaded. Please ensure model.pkl exists and is valid."
-        )
+WEATHER_API_URL = "https://d.meteostat.net/app/proxy/stations/hourly?station=42182&tz=Asia/Kolkata&start={date}&end={date}"
+
+@app.get("/predict")
+def predict(date: str = Query(default=datetime.today().strftime('%Y-%m-%d'))):
+    # Fetch weather data
+    response = requests.get(WEATHER_API_URL.format(date=date))
+    if response.status_code != 200:
+        return {"error": "Failed to fetch weather data"}
     
-    try:
-        # Fetch weather data
-        weather_data = await fetch_weather_data(station, date)
-        processed_records = process_weather_data(weather_data['data'])
+    weather_data = response.json().get("data", [])
+    if not weather_data:
+        return {"error": "No weather data available"}
+    
+    predictions = []
+    for entry in weather_data:
+        hour = datetime.strptime(entry["time"], "%Y-%m-%d %H:%M:%S").hour
         
-        predictions = []
-        # Process in groups of 7
-        for i in range(0, len(processed_records), 7):
-            batch = processed_records[i:i+7]
-            if len(batch) == 7:  # Only process complete batches
-                features = np.array([record['features'] for record in batch])
-                prediction = model.predict(features)
-                
-                # Create prediction results
-                for j, pred in enumerate(prediction):
-                    predictions.append({
-                        "timestamp": batch[j]['time'],
-                        "prediction": float(pred),
-                        "actual_temp": batch[j]['features'][0],
-                        "actual_humidity": batch[j]['features'][2]
-                    })
+        features = [
+            entry.get("temp", 25),  # TEMP
+            entry.get("dwpt", 15),  # DWPT
+            entry.get("rhum", 75),  # RHUM
+            entry.get("prcp", 0),   # PRCP
+            entry.get("wdir", 180), # WDIR
+            entry.get("wspd", 5),   # WSPD
+            entry.get("pres", 1013),# PRES
+            entry.get("coco", 1),   # COCO
+            hour,  # HOUR
+            datetime.strptime(date, '%Y-%m-%d').weekday(),  # DAY_OF_WEEK
+            datetime.strptime(date, '%Y-%m-%d').month   # MONTH
+        ]
         
-        return {
-            "station": station,
-            "date": date,
-            "predictions": predictions
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error making prediction: {str(e)}"
-        )
+        # Reshape and predict
+        input_array = np.array(features).reshape(1, -1)
+        prediction = model.predict(input_array)
+        predictions.append({"hour": hour, "prediction": prediction.tolist()})
+    
+    return {"predictions": predictions}
 
-# Run the server using: uvicorn main:app --reload
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
